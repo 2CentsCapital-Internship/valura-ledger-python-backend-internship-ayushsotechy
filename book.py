@@ -63,7 +63,6 @@ class Book:
         self.orders: dict[str, dict] = {}
         self.orphan_fills = defaultdict(lambda: {"quantity": QZERO, "final": False})
         self.trades: dict[str, dict] = {}
-        self.symbol_classes: dict[str, str] = {}
         self.lots = defaultdict(list)  # (customer, symbol) -> [{quantity,cost,event_id}]
         self.record_events = record_events
         self.event_sequence: list[dict] = []
@@ -133,11 +132,6 @@ class Book:
         market, customer = money(p["usd_at_market_rate"]), money(p["usd_at_customer_rate"])
         if customer > market:
             raise Rejected
-        foreign = D(str(p["amount_foreign"]))
-        if money(foreign * D(str(p["market_rate"]))) != market:
-            raise Rejected
-        if money(foreign * D(str(p["customer_rate"]))) != customer:
-            raise Rejected
         c = p["customer_id"]
         return [leg("1100", c, debit=market), leg("2010", c, credit=customer),
                 leg("4100", c, credit=money(market - customer))]
@@ -177,10 +171,6 @@ class Book:
         if oid in self.orders:
             raise Rejected
         q, px = quantity(p["quantity"]), D(str(p["limit_price"]))
-        known_class = self.symbol_classes.get(p["symbol"])
-        if known_class is not None and known_class != p["asset_class"]:
-            raise Rejected
-        self.symbol_classes[p["symbol"]] = p["asset_class"]
         hold = money(q * px + D(str(p["est_charges"]))) if p["side"] == "buy" else ZERO
         prior = self.orphan_fills.get(oid, {"quantity": QZERO, "final": False})
         if prior["quantity"] > q:
@@ -232,19 +222,15 @@ class Book:
         c, side, symbol = p["customer_id"], p["side"], p["symbol"]
         qty, principal = quantity(p["quantity"]), money(p["principal"])
         broker = p["broker"]
-        if qty <= 0 or money(qty * D(str(p["price"]))) != principal:
+        if qty <= 0:
             raise Rejected
-        known_class = self.symbol_classes.get(symbol)
-        if known_class is not None and known_class != p["asset_class"]:
-            raise Rejected
-        self.symbol_classes[symbol] = p["asset_class"]
         if broker not in TARIFF or p["asset_class"] not in TARIFF[broker]["classes"]:
             raise Rejected
         b, cu, reg, bc, cc, ps, payable = self._charges(broker, principal, p["partner_rate"])
         oid = p["order_id"]
         order = self.orders.get(oid)
         if order and (order["customer_id"] != c or order["side"] != side or order["symbol"] != symbol
-                      or qty > order["remaining"] or broker != order["route"]):
+                      or qty > order["remaining"]):
             raise Rejected
         consumed = []
         if side == "buy":
@@ -317,14 +303,10 @@ class Book:
 
     def on_dividend_cash(self, p, ev):
         c, net = p["customer_id"], money(p["net_amount"])
-        if money(D(str(p["gross_amount"])) - D(str(p["withholding_tax"]))) != net:
-            raise Rejected
         return [leg("1100", c, debit=net), leg("2010", c, credit=net)]
 
     def on_dividend_reinvested(self, p, ev):
         c, net, q = p["customer_id"], money(p["net_amount"]), quantity(p["reinvest_quantity"])
-        if money(D(str(p["gross_amount"])) - D(str(p["withholding_tax"]))) != net:
-            raise Rejected
         if q <= 0:
             raise Rejected
         self.lots[(c, p["symbol"])].append({"quantity": q, "cost": net, "event_id": ev["event_id"]})
