@@ -27,7 +27,9 @@ from book import Book
 
 class ArenaClient:
     def __init__(self, url: str, key: str, mode: str,
-                 batch: int = 100, flush_ms: int = 400) -> None:
+                 batch: int = 100, flush_ms: int = 400,
+                 resume: bool = False,
+                 skip_submitted_through: int = -1) -> None:
         self.url = url.rstrip("/")
         self.key = key
         self.mode = mode
@@ -42,7 +44,8 @@ class ArenaClient:
         # Limited tiers require an explicit opt-in to create a fresh run.
         # Reconnects must omit this flag so they resume instead of consuming
         # another attempt.
-        self.start_new = mode != "practice"
+        self.start_new = mode != "practice" and not resume
+        self.skip_submitted_through = skip_submitted_through
 
     # -- submitting ---------------------------------------------------------
     def flush(self, http: httpx.Client) -> None:
@@ -91,6 +94,10 @@ class ArenaClient:
         # latency measurement span the entire rewind interval.
         if self.book.last_duplicate:
             return
+        # Recovery can replay from zero to reconstruct in-memory state while
+        # avoiding responses the server already accepted before a dead stream.
+        if ev.get("offset", -1) <= self.skip_submitted_through:
+            return
         # An event you correctly reject still needs a submission, with no legs.
         self.pending.append({"event_id": ev["event_id"], "legs": legs or []})
         self.stats["events"] += 1
@@ -135,10 +142,11 @@ class ArenaClient:
                     else:
                         self.cursor = max(self.cursor, ev.get("offset", 0) + 1)
                         if ev["type"] == "checkpoint_request":
-                            self.checkpoint(
-                                http, ev["payload"]["checkpoint_id"],
-                                ev["payload"].get("as_of_event_id"),
-                            )
+                            if ev.get("offset", -1) > self.skip_submitted_through:
+                                self.checkpoint(
+                                    http, ev["payload"]["checkpoint_id"],
+                                    ev["payload"].get("as_of_event_id"),
+                                )
                         else:
                             self.handle(ev)
 
@@ -175,6 +183,10 @@ def main() -> int:
     ap.add_argument("--mode", default="practice",
                     choices=["practice", "submission", "final"])
     ap.add_argument("--seconds", type=float, default=1500)
+    ap.add_argument("--resume", action="store_true",
+                    help="resume the current limited-tier run without new=true")
+    ap.add_argument("--skip-submitted-through", type=int, default=-1,
+                    help="rebuild state but do not resubmit through this offset")
     a = ap.parse_args()
 
     if a.mode != "practice":
@@ -184,7 +196,8 @@ def main() -> int:
             print("  Cancelled.")
             return 1
 
-    c = ArenaClient(a.url, a.key, a.mode)
+    c = ArenaClient(a.url, a.key, a.mode, resume=a.resume,
+                    skip_submitted_through=a.skip_submitted_through)
     print(f"connecting to {a.url} as {a.mode} ...", flush=True)
     out = c.run(a.seconds)
     print("\nstats:", json.dumps(out["stats"]))
