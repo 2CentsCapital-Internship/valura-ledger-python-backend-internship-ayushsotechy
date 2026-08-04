@@ -86,6 +86,11 @@ class ArenaClient:
     # -- consuming ----------------------------------------------------------
     def handle(self, ev: dict) -> None:
         legs = self.book.apply(ev)
+        # A replayed event was already answered on its first delivery. Sending
+        # a second empty response is both unnecessary and makes the server's
+        # latency measurement span the entire rewind interval.
+        if self.book.last_duplicate:
+            return
         # An event you correctly reject still needs a submission, with no legs.
         self.pending.append({"event_id": ev["event_id"], "legs": legs or []})
         self.stats["events"] += 1
