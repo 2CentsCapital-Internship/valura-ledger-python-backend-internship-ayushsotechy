@@ -66,10 +66,13 @@ class Book:
         self.lots = defaultdict(list)  # (customer, symbol) -> [{quantity,cost,event_id}]
         self.record_events = record_events
         self.event_sequence: list[dict] = []
+        self.last_duplicate = False
 
     def apply(self, ev: dict) -> list[dict]:
         eid = ev.get("event_id")
+        self.last_duplicate = False
         if not eid or eid in self.seen:
+            self.last_duplicate = bool(eid and eid in self.seen)
             return []
         self.seen.add(eid)
         handler = getattr(self, "on_" + str(ev.get("type")), None)

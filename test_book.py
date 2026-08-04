@@ -16,6 +16,7 @@ def test_cash_idempotency_and_historical_snapshot():
     e1 = event(1, "deposit", customer_id="C1", amount="100.00")
     assert balanced(b.apply(e1))
     assert b.apply(e1) == []
+    assert b.last_duplicate is True
     b.apply(event(2, "fee_charged", customer_id="C1", amount="3.25"))
     assert b.snapshot("e1")["customers"]["C1"]["wallet_cash"] == "100.00"
     assert b.snapshot()["customers"]["C1"]["wallet_cash"] == "96.75"
